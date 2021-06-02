@@ -396,8 +396,35 @@ let check_cmodule cli =
         let j = `Assoc output in
         sprintf "%s\n" (Yojson.Basic.pretty_to_string j)
       else
+        let libname, lentries = 
+          match cmod.libs with 
+          | None -> "none", "none"
+          | Some l -> 
+            let lname = SC.SCIdentifier.as_error_string l.lname in
+            let lentries =
+              String.concat ~sep:", " 
+              (List.map l.lentries ~f:(fun entry ->
+                match entry with
+                | Dis.PostDisSyntax.LibVar (name, _, _) -> SC.SCIdentifier.as_error_string name 
+                | Dis.PostDisSyntax.LibTyp (tyname, _) -> SC.SCIdentifier.as_error_string tyname                 
+              ))
+            in
+            lname, lentries
+        in
         scilla_warning_to_sstring (get_warnings ())
         ^ "\ngas_remaining: " ^ Stdint.Uint64.to_string g ^ "\n"
+        (* Debug Tram *)
+        ^ "\ncontract-info: "
+        ^ "\ncname: " ^ SC.SCIdentifier.as_error_string cmod.contr.cname
+        ^ "\ncparams: " ^ (String.concat ~sep:", " 
+          (List.map cmod.contr.cparams ~f:(fun (param, _) -> SC.SCIdentifier.as_error_string param)))
+        ^ "\ncfields: " ^ (String.concat ~sep:", "
+          (List.map cmod.contr.cfields ~f:(fun (name, _, _) -> SC.SCIdentifier.as_error_string name)))
+        ^ "\nccomps names: " ^ (String.concat ~sep:", "
+          (List.map cmod.contr.ccomps ~f:(fun ccomp -> SC.SCIdentifier.as_error_string ccomp.comp_name)))
+        ^ "\n\nlibrary-info: "
+        ^ "\nlname: " ^ libname 
+        ^ "\nlentries: " ^ lentries
 
 let run args ~exe_name =
   GlobalConfig.reset ();
