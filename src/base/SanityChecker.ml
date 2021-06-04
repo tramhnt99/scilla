@@ -378,6 +378,58 @@ struct
   end
 
   (* ************************************** *)
+  (* ******** Dead Code Detector ********** *)
+  (* ************************************** *)
+  module DeadCodeDetect = struct
+  (* Dead Code Detector for Contracts *)
+
+  (* TODO:
+  - Check if procedures, mutable fields, immutable contracts parameters are used
+  - Check if procedures' parameters are used
+  - Check pattern-matching binders
+
+  - Check functions defined in the library of the file are used
+  - Check if function params are used
+  *)
+
+    let dead_code_cmod (cmod : cmodule) = 
+      (* Take out all the procedures as strings *)
+      let c_proc = 
+        let procs = 
+          List.filter cmod.contr.ccomps ~f:(fun comp -> 
+              match comp.comp_type with
+              | CompTrans -> false
+              | CompProc -> true
+          )
+        in
+        List.map procs ~f:(fun comp -> as_error_string comp.comp_name)
+      in
+
+      (* Find all statements that use the procedures *)
+      let used_proc =
+      List.fold_left ~init:[] ~f:(fun acc_proc c -> 
+        let rec stmt_iter stmts = 
+          List.fold_left ~init:[] ~f:(fun acc_proc2 (s, _) -> 
+            match s with
+            | CallProc (p, _ ) -> as_error_string p :: acc_proc2 
+            | MatchStmt (_, clauses) ->
+              (List.fold_left ~init:[] ~f:(fun acc_proc3 (_, mbody) ->
+                (stmt_iter mbody) @ acc_proc3
+              ) clauses) @ acc_proc2
+            | _ -> acc_proc2
+          ) stmts
+        in (stmt_iter c.comp_body) @ acc_proc
+      ) cmod.contr.ccomps 
+      in
+
+      let warn_msg1 = sprintf "Unused procedures: %s\n" 
+        (String.concat ~sep:", " c_proc) in
+      let warn_msg2 = sprintf "Used procedures: %s\n" 
+        (String.concat ~sep:", " used_proc) in
+      warn1 (warn_msg1 ^ warn_msg2) warning_level_map_load_store (ER.get_loc ER.dummy_rep)
+  end
+
+  (* ************************************** *)
   (* ******** Interface to Checker ******** *)
   (* ************************************** *)
 
@@ -387,6 +439,7 @@ struct
     let%bind () = CheckShadowing.shadowing_libentries rlibs in
     let%bind () = forallM ~f:CheckShadowing.shadowing_libtree elibs in
     let%bind () = CheckShadowing.shadowing_cmod cmod in
+    DeadCodeDetect.dead_code_cmod cmod;
     pure ()
 
   let lmod_sanity (lmod : lmodule) (rlibs : lib_entry list)
