@@ -418,18 +418,14 @@ struct
           );
 
         (* Populate the dictionary with cfields *)
-        List.iter 
-          (List.map cmod.contr.cfields ~f:( fun (a, b, c) -> a))
-            ~f:(fun cfield ->
-              cfields_dict := insert_unique (as_error_string cfield) false !cfields_dict
-            );
+        List.iter cmod.contr.cfields ~f:( fun (a,b,c) ->
+          cfields_dict := insert_unique (as_error_string a) false !cfields_dict
+        );
 
         (* Populate the dictionary with cparams *)
-        List.iter 
-          (List.map cmod.contr.cparams ~f:fst)
-            ~f:(fun cparam -> 
-              cparams_dict := insert_unique (as_error_string cparam) false !cparams_dict
-            );
+        List.iter cmod.contr.cparams ~f:(
+          fun (cparam, _) -> cparams_dict := insert_unique (as_error_string cparam) false !cparams_dict
+        );
 
         (* Expressions iterator that
           - Logs used parameters
@@ -456,31 +452,12 @@ struct
               )
             | Builtin (_, _, actuals) -> 
               List.iter actuals ~f:(
-                fun act ->
-                  mark_used cparams_dict act;
+                fun act -> mark_used cparams_dict act;
               )
-            (* | Fun (f, _, _ ) -> 
-              let msg = sprintf "Function %s" (as_error_string f) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
-            | TFun (tv, _) -> 
-              let msg = sprintf "TFunction %s" (as_error_string tv) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
-            | Constr (n, _, _) ->
-              let msg = sprintf "Constr %s" (as_error_string n) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep); *)
-            (* | Let (i, _, _, _)-> 
-              let msg = sprintf "Let %s" (as_error_string i) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
-            | Fixpoint (f, _, _) ->
-              let msg = sprintf "Fixpoint %s" (as_error_string f) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
-            | TApp (tf, _) ->
-              let msg = sprintf "TApp %s" (as_error_string tf) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep); *)
             | _ -> ()
         in
         
-        (* Finds all used procedures *)
+        (* Finds all used procedures, fields, and contract param *)
         List.iter ~f:(fun c -> 
           let rec stmt_iter stmts = 
             List.iter ~f:(fun (s, _) -> 
@@ -502,22 +479,19 @@ struct
         ) cmod.contr.ccomps;
         
         let warn_msg1 = 
-          let proc_list = to_list !proc_dict in
-          let unused_proc = List.map (List.filter proc_list ~f:(fun (_, v) -> not v)) fst in 
+          let unused_proc = List.map (List.filter (to_list !proc_dict) ~f:(fun (_, v) -> not v)) fst in 
           sprintf "\nUnused procedures: %s\n" (String.concat ~sep:", " unused_proc)
         in
         warn1 warn_msg1 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
 
         let warn_msg2 =
-          let fields_list = to_list !cfields_dict in
-          let unused_fields = List.map (List.filter fields_list ~f:(fun (_, v) -> not v)) fst in 
+          let unused_fields = List.map (List.filter (to_list !cfields_dict) ~f:(fun (_, v) -> not v)) fst in 
           sprintf "\nUnused fields: %s\n" (String.concat ~sep:", " unused_fields)
         in
         warn1 warn_msg2 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
 
         let warn_msg3 = 
-          let cparam_list = to_list !cparams_dict in
-          let unused_cparam = List.map (List.filter cparam_list ~f:(fun (_, v) -> not v)) fst in 
+          let unused_cparam = List.map (List.filter (to_list !cparams_dict) ~f:(fun (_, v) -> not v)) fst in 
           sprintf "\nUnused contract params: %s\n" (String.concat ~sep:", " unused_cparam)
         in
         warn1 warn_msg3 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
