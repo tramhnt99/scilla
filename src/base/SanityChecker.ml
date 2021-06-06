@@ -394,10 +394,18 @@ struct
   *)
 
     let dead_code_cmod (cmod : cmodule) = 
+
+      (* Update a dictionary that a value is used *)
+      let mark_used dict_ref name =
+        dict_ref := update_all (as_error_string name) true !dict_ref
+      in
+
       let dead_proc () =
 
+        (* Dictionaries of procedures, fields, and contract parameters *)
         let proc_dict = ref (make_dict ()) in
         let cfields_dict = ref (make_dict ()) in
+        let cparams_dict = ref (make_dict ()) in
 
         (* Populate the dictionary with existing procedures *)
         List.iter 
@@ -415,6 +423,62 @@ struct
             ~f:(fun cfield ->
               cfields_dict := insert_unique (as_error_string cfield) false !cfields_dict
             );
+
+        (* Populate the dictionary with cparams *)
+        List.iter 
+          (List.map cmod.contr.cparams ~f:fst)
+            ~f:(fun cparam -> 
+              cparams_dict := insert_unique (as_error_string cparam) false !cparams_dict
+            );
+
+        (* Expressions iterator that
+          - Logs used parameters
+          - ...
+         *)
+
+        (* TODO: Might not need to be recursive *)
+        let rec expr_iter expr = 
+            match fst expr with
+            | Var x -> 
+              (* if x is not ppart of param, it is not added to dict 
+              - from implementation of List.Assoc.add *)
+              mark_used cparams_dict x;
+              let msg = sprintf "Var %s" (as_error_string x) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+            | App (f, actuals) ->
+              (* Can parameters be declared as functions? *)
+              mark_used cparams_dict f;
+              List.iter actuals ~f:(
+                fun act -> 
+                  mark_used cparams_dict act;
+                  let msg = sprintf "Application of actual %s" (as_error_string act) in
+                  warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+              )
+            | Builtin (_, _, actuals) -> 
+              List.iter actuals ~f:(
+                fun act ->
+                  mark_used cparams_dict act;
+              )
+            (* | Fun (f, _, _ ) -> 
+              let msg = sprintf "Function %s" (as_error_string f) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+            | TFun (tv, _) -> 
+              let msg = sprintf "TFunction %s" (as_error_string tv) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+            | Constr (n, _, _) ->
+              let msg = sprintf "Constr %s" (as_error_string n) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep); *)
+            (* | Let (i, _, _, _)-> 
+              let msg = sprintf "Let %s" (as_error_string i) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+            | Fixpoint (f, _, _) ->
+              let msg = sprintf "Fixpoint %s" (as_error_string f) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+            | TApp (tf, _) ->
+              let msg = sprintf "TApp %s" (as_error_string tf) in
+              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep); *)
+            | _ -> ()
+        in
         
         (* Finds all used procedures *)
         List.iter ~f:(fun c -> 
@@ -425,9 +489,9 @@ struct
               | MapGet (_, f', _, _) | RemoteMapGet (_, _, f', _, _)
               | MapUpdate (f', _, _)
               | Store (f', _) -> (* TODO: storing/updating without using prev value is also dead code *)
-                cfields_dict := update_all (as_error_string f') true !cfields_dict;
-              | CallProc (p, _ ) -> 
-                proc_dict := update_all (as_error_string p) true !proc_dict
+                mark_used cfields_dict f';
+              | Bind (_, expr) -> expr_iter expr
+              | CallProc (p, _ ) -> mark_used proc_dict p;
               | MatchStmt (_, clauses) ->
                 (List.iter ~f:(fun (_, mbody) ->
                   stmt_iter mbody
@@ -451,19 +515,12 @@ struct
         in
         warn1 warn_msg2 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
 
-        
-      in
-
-      let dead_cparams () =
-        
-        let cparams_dict = ref (make_dict ()) in
-
-        (* Populate the dictionary with cparams *)
-        List.iter 
-          (List.map cmod.contr.cparams ~f:fst)
-            ~f:(fun cparam -> 
-              cparams_dict := insert_unique (as_error_string cparam) false !cparams_dict
-            );
+        let warn_msg3 = 
+          let cparam_list = to_list !cparams_dict in
+          let unused_cparam = List.map (List.filter cparam_list ~f:(fun (_, v) -> not v)) fst in 
+          sprintf "\nUnused contract params: %s\n" (String.concat ~sep:", " unused_cparam)
+        in
+        warn1 warn_msg3 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
       in
 
     dead_proc ();
