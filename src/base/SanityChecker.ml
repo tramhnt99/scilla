@@ -391,6 +391,7 @@ struct
   - Check functions defined in the library of the file are used
   - Check if function params are used
   - Don't forget to check the contraints
+  - Check dead events? 
   *)
 
     let dead_code_cmod (cmod : cmodule) = 
@@ -400,22 +401,31 @@ struct
         dict_ref := update_all (as_error_string name) true !dict_ref
       in
 
-      let dead_proc () =
+      (* Dead identifiers ie. 
+      - procedures 
+      - mutable fields 
+      - contract parameters *)
+      let dead_iden () =
 
         (* Dictionaries of procedures, fields, and contract parameters *)
         let proc_dict = ref (make_dict ()) in
         let cfields_dict = ref (make_dict ()) in
         let cparams_dict = ref (make_dict ()) in
+        let pparams_dict = ref (make_dict ()) in
 
-        (* Populate the dictionary with existing procedures *)
-        List.iter 
-          (List.filter cmod.contr.ccomps ~f:(fun comp -> 
-              match comp.comp_type with
-              | CompTrans -> false
-              | CompProc -> true
-          )) ~f:(fun comp -> 
-          proc_dict := insert_unique (as_error_string comp.comp_name) false !proc_dict
-          );
+        (* ********** Populating Dictionaries ********** *)
+        List.iter cmod.contr.ccomps ~f:(fun comp ->
+          match comp.comp_type with
+          | CompTrans -> ()
+          | CompProc -> 
+            (* Populate the existing procedure dictionary *)
+            proc_dict := insert_unique (as_error_string comp.comp_name) false !proc_dict;
+            (* Populate the procedure's parameters dictionary *)
+            List.iter comp.comp_params ~f:(
+              fun (param, _) ->
+                pparams_dict := insert_unique (as_error_string param) false !pparams_dict;
+            );
+        );
 
         (* Populate the dictionary with cfields *)
         List.iter cmod.contr.cfields ~f:( fun (a,b,c) ->
@@ -427,49 +437,69 @@ struct
           fun (cparam, _) -> cparams_dict := insert_unique (as_error_string cparam) false !cparams_dict
         );
 
+
+        (* ********** Detecting Dead Code ************** *)
         (* Expressions iterator that
-          - Logs used parameters
-          - ...
+          - Logs used contract parameters
+          - Logs used procedure parameters
          *)
 
-        (* TODO: Might not need to be recursive *)
-        let rec expr_iter expr = 
+        let rec expr_iter expr is_proc = 
             match fst expr with
             | Var x -> 
               (* if x is not ppart of param, it is not added to dict 
               - from implementation of List.Assoc.add *)
               mark_used cparams_dict x;
-              let msg = sprintf "Var %s" (as_error_string x) in
-              warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+              if is_proc then mark_used pparams_dict x;
+            | Let (_, _, e1, e2) ->
+              expr_iter e1 is_proc; 
+              expr_iter e2 is_proc
+            | Message sl ->
+              List.iter sl ~f:(fun (_, payload) ->
+                  match payload with
+                  | MLit _ -> ()
+                  | MVar x -> 
+                    mark_used cparams_dict x;
+                    if is_proc then mark_used pparams_dict x;)
             | App (f, actuals) ->
               (* Can parameters be declared as functions? *)
               mark_used cparams_dict f;
-              List.iter actuals ~f:(
-                fun act -> 
+              if is_proc then mark_used pparams_dict f;
+              List.iter actuals ~f:(fun act -> 
                   mark_used cparams_dict act;
-                  let msg = sprintf "Application of actual %s" (as_error_string act) in
-                  warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
-              )
+                  if is_proc then mark_used pparams_dict act;)
+            | MatchExpr (x, pats) -> 
+              mark_used cparams_dict x;
+              List.iter pats (fun (p, e) -> expr_iter e is_proc)
             | Builtin (_, _, actuals) -> 
-              List.iter actuals ~f:(
-                fun act -> mark_used cparams_dict act;
-              )
+              List.iter actuals ~f:(fun act -> 
+                  mark_used cparams_dict act;
+                  if is_proc then mark_used pparams_dict act;)
+            | TFun (_, e) | Fixpoint (_, _, e) | GasExpr (_, e)
+            | Fun (_, _, e) -> expr_iter e is_proc
             | _ -> ()
         in
         
         (* Finds all used procedures, fields, and contract param *)
         List.iter ~f:(fun c -> 
+          let is_proc = 
+            match c.comp_type with
+            | CompTrans -> false 
+            | CompProc -> true
+          in
           let rec stmt_iter stmts = 
             List.iter ~f:(fun (s, _) -> 
               match s with
-              | Load (_, f') | RemoteLoad (_, _, f') 
-              | MapGet (_, f', _, _) | RemoteMapGet (_, _, f', _, _)
-              | MapUpdate (f', _, _)
-              | Store (f', _) -> (* TODO: storing/updating without using prev value is also dead code *)
-                mark_used cfields_dict f';
-              | Bind (_, expr) -> expr_iter expr
+              | Load (_, f) | RemoteLoad (_, _, f) 
+              | MapGet (_, f, _, _) | RemoteMapGet (_, _, f, _, _)
+              | MapUpdate (f, _, _)
+              | Store (f, _) -> (* TODO: storing/updating without using prev value is also dead code *)
+                mark_used cfields_dict f;
+              | Bind (x, expr) -> expr_iter expr is_proc
               | CallProc (p, _ ) -> mark_used proc_dict p;
-              | MatchStmt (_, clauses) ->
+              | MatchStmt (x, clauses) ->
+                mark_used cfields_dict x;
+                if is_proc then mark_used pparams_dict x;
                 (List.iter ~f:(fun (_, mbody) ->
                   stmt_iter mbody
                 ) clauses)
@@ -495,10 +525,16 @@ struct
           sprintf "\nUnused contract params: %s\n" (String.concat ~sep:", " unused_cparam)
         in
         warn1 warn_msg3 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+
+        let warn_msg4 =
+          let unused_pparam = List.map (List.filter (to_list !pparams_dict) ~f:(fun (_, v) -> not v)) fst in 
+          sprintf "\nUnused procedure params: %s\n" (String.concat ~sep:", " unused_pparam)
+        in
+        warn1 warn_msg4 warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+
       in
 
-    dead_proc ();
-    (* dead_cfields () *)
+    dead_iden ();
   end
 
   (* ************************************** *)

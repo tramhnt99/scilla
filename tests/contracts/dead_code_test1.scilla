@@ -101,7 +101,7 @@ procedure EmitMemberEvent (status: Bool, status_code: Uint32,  msg: String)
   end
 end
 
-procedure DeadProc1 ()
+procedure DeadProc1 (dead_pparam: Bool)
 end
 
 procedure DeadProc2 ()
