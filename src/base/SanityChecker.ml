@@ -390,9 +390,9 @@ struct
   - Check if procedures, mutable fields, immutable contracts parameters are used
   - Check if procedures' parameters are used
   - Check pattern-matching binders
-
   - Check functions defined in the library of the file are used
   - Check if function params are used
+
   - Check for useless library imports
 
   - Check dead events?
@@ -411,7 +411,12 @@ struct
       | _ -> ()
     
     (* Clear dictionary *)
-    let clear_dict = remove_all 
+    let clear_dict dict_ref = 
+      dict_ref := make_dict ()
+
+    (* Add to dict *)
+    let add_dict dict_ref name =
+      dict_ref := insert_unique (as_error_string name) (false, get_rep name) !dict_ref
 
     (* Filter through dictionary to find unused identifiers *)
     let find_unused dict warn_msg =
@@ -427,19 +432,23 @@ struct
     let dc_cmod (cmod: cmodule) =
 
       (* Global dictionaries: fields, contract parameters, procedures *)
+      (* Global refers to being global in the contract *)
       let cfields_dict = ref (make_dict ()) in
       let cparams_dict = ref (make_dict ()) in
       let proc_dict = ref (make_dict ()) in
 
+      (* Library entries *)
+      let libvar_dict = ref (make_dict ()) in
+      let libty_dict = ref (make_dict ()) in
+
       (******* Populate global dictionaries *******)
       List.iter cmod.contr.cfields ~f:( fun (a,b,c) ->
-        cfields_dict := insert_unique (as_error_string a) (false, get_rep a) !cfields_dict
+        add_dict cfields_dict a
       );
 
       List.iter cmod.contr.cparams ~f:(
         fun (cparam, _) -> 
-          cparams_dict := 
-            insert_unique (as_error_string cparam) (false, get_rep cparam) !cparams_dict
+          add_dict cparams_dict cparam
       );
 
       List.iter cmod.contr.ccomps ~f:(fun comp -> 
@@ -450,6 +459,29 @@ struct
           proc_dict := insert_unique (as_error_string comp.comp_name) (false, ER.dummy_rep) !proc_dict;
       );
 
+      (******* Populate library dictionaries *******)
+      match cmod.libs with 
+      | None -> ()
+      | Some lib -> 
+        List.iter lib.lentries ~f:( fun lib_entry ->
+          match lib_entry with 
+          | LibVar (name, _, e) -> 
+            (* warn1 ("Added to libvar_dict " ^ (as_error_string name)) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
+            add_dict libvar_dict name;
+          | LibTyp (name, _) -> add_dict libty_dict name
+        );
+
+      (* Marking use of ADTs *)
+      let rec mark_used_ty ty =
+          match ty with 
+          | SCType.ADT (iden, _) -> mark_used libty_dict iden
+          | SCType.MapType (ty1, ty2) | SCType.FunType (ty1, ty2) -> 
+            mark_used_ty ty1;
+            mark_used_ty ty2;
+          | _ -> ()
+          (* TODO: TEST *)
+      in
+
       (**************** Iterators ****************)
       (* Iterate through expressions to look for use of 
       - Contract parameters
@@ -457,13 +489,14 @@ struct
       *)
       let rec expr_iter expr local_dicts = 
 
-        (* Marking a variable is used in contract parameter dictionary
+        (* Marking a variable is used in contract parameter dict and library entries
         and the local dictionaries *)
         let mark_used' x = 
           mark_used cparams_dict x;
+          mark_used libvar_dict x;
           List.iter local_dicts ~f:(fun dict -> mark_used dict x);
         in
-
+        
         match fst expr with 
         | Var x -> mark_used' x;
         | Let (i, _, e1, e2) ->
@@ -479,7 +512,8 @@ struct
             | MLit _ -> () 
             | MVar x -> mark_used' x;
           )
-        | Constr (_, _, es) ->
+        | Constr (_, tys, es) ->
+          List.iter tys ~f:(fun ty -> mark_used_ty ty);
           List.iter es ~f:(fun e -> mark_used' e)
         | App (f, actuals) ->
           (* warn1 ("App " ^ (as_error_string f)) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
@@ -487,6 +521,8 @@ struct
           List.iter actuals ~f:(fun act -> 
           (* warn1 (as_error_string act) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
           mark_used' act)
+        |  TApp (_, tys) -> 
+          List.iter tys mark_used_ty
         | MatchExpr (x, plist) ->
           begin
             mark_used' x;
@@ -507,7 +543,7 @@ struct
           mark_used' act);
         | TFun (_, e) | Fixpoint (_, _, e) | GasExpr (_, e)
         | Fun (_, _, e) -> expr_iter e local_dicts
-        | Literal _ | TApp _ -> ()
+        | Literal _ -> ()
       in
 
       (* Iterate through stmts to look for use of 
@@ -517,6 +553,7 @@ struct
       let rec stmt_iter stmts local_dicts =
         let mark_used' x = 
           mark_used cfields_dict x;
+          mark_used libvar_dict x;
           List.iter local_dicts ~f:(fun dict -> mark_used dict x);
         in
         List.iter stmts ~f:(fun (s, _) -> 
@@ -572,8 +609,9 @@ struct
       );
 
       (* Iterate through expressions of fields *)
-      List.iter cmod.contr.cfields ~f:(fun (_, _, exp) ->
+      List.iter cmod.contr.cfields ~f:(fun (_, ty, exp) ->
         expr_iter exp [];
+        mark_used_ty ty;
       );
 
       (* Check constraints through constraints *)
@@ -583,6 +621,24 @@ struct
       find_unused !proc_dict "Unused procedures: ";
       find_unused !cfields_dict "Unused fields: ";
       find_unused !cparams_dict "Unused contract params: ";
+      find_unused !libvar_dict "Unused library var: ";
+      find_unused !libty_dict "Unused user defined ADT: ";
+
+      (* Clear dictionaries for checking libraries *)
+      clear_dict proc_dict;
+      clear_dict cfields_dict;
+      clear_dict cparams_dict;
+      clear_dict libvar_dict;
+
+      (* Check exp from libraries *)
+      match cmod.libs with 
+      | None -> ()
+      | Some lib ->
+        List.iter lib.lentries ~f:( fun l_entry ->
+          match l_entry with 
+          | LibTyp _ -> ()
+          | LibVar (_, _, e) -> expr_iter e [];
+        );
     
 
   end
