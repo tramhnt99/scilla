@@ -180,7 +180,6 @@ transition AddMember(name: String, member_address: ByStr20, member_type: Uint32)
                         builtin lt member_type three;
         match valid_type with
         | True =>
-
             new_member = Member name member_type;
             members[member_address] := new_member;
             status = True;
