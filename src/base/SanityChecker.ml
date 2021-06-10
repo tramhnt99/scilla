@@ -390,6 +390,8 @@ struct
 
   - Check functions defined in the library of the file are used
   - Check if function params are used
+  - Check for useless library imports
+
   - Don't forget to check the contraints
   - Check dead events?
   - Include the location of the dead code
@@ -405,6 +407,13 @@ struct
       - contract parameters 
       - procedure parameters *)
     let dead_code_cmod (cmod : cmodule) =
+
+      let find_unused dict warn_msg =
+        let unused_list = List.map (List.filter (to_list dict) ~f:(fun (_, v) -> not v)) fst in
+        if not (List.is_empty unused_list) then 
+          let unused_s = String.concat ~sep:", " unused_list in
+          warn1 (warn_msg ^ unused_s) warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+      in
 
       (* Dictionaries of procedures, fields, and contract parameters *)
       let proc_dict = ref (make_dict ()) in
@@ -425,6 +434,7 @@ struct
               pparams_dict := insert_unique (as_error_string param) false !pparams_dict;
           );
       );
+
 
       (* Populate the dictionary with cfields *)
       List.iter cmod.contr.cfields ~f:( fun (a,b,c) ->
@@ -461,7 +471,6 @@ struct
                   mark_used cparams_dict x;
                   if is_proc then mark_used pparams_dict x;)
           | App (f, actuals) ->
-            (* Can parameters be declared as functions? *)
             mark_used cparams_dict f;
             if is_proc then mark_used pparams_dict f;
             List.iter actuals ~f:(fun act -> 
@@ -469,6 +478,14 @@ struct
                 if is_proc then mark_used pparams_dict act;)
           | MatchExpr (x, pats) -> 
             mark_used cparams_dict x;
+            List.iter pats ~f:(
+              fun (p, _) -> 
+              match p with
+              | Binder x -> 
+                let msg = sprintf "\nExp Pattern Binder: %s" (as_error_string x) in
+                warn1 msg warning_level_map_load_store (ER.get_loc ER.dummy_rep);
+              | _ -> ()
+            );
             List.iter pats (fun (p, e) -> expr_iter e is_proc)
           | Builtin (_, _, actuals) -> 
             List.iter actuals ~f:(fun act -> 
@@ -478,8 +495,50 @@ struct
           | Fun (_, _, e) -> expr_iter e is_proc
           | _ -> ()
       in
+
+      (* Iterating through pattern binder in statements *)
+      let dc_pattern clauses =
+        let rec extract_binders p_left acc =
+          match p_left with 
+          | [] -> acc 
+          | h :: t -> 
+            match h with 
+            | Binder x -> extract_binders t (x::acc)
+            | Constructor (_, ps) -> extract_binders (t @ ps) acc 
+            | Wildcard -> extract_binders t acc
+        in
+        let stmt_iter stmts dict = 
+          (* Keep scope of the binder within these statements *)
+          List.iter stmts ~f:( fun (s, _) ->
+            match s with 
+            | Load (_, v) | RemoteLoad (_, _, v) 
+            (* maps are storable*)
+            | MapGet (_, v, _, _) | RemoteMapGet (_, _, v, _, _) 
+            | MapUpdate (v, _, _) | Store (v, _) -> mark_used dict v 
+            | MatchStmt (x, clauses) -> ()
+            | _ -> ()
+          )
+        in 
+        List.iter clauses ~f:(fun (p, stmts) ->
+          let patbind_dict = ref (make_dict ()) in
+          let binders = extract_binders [p] [] in 
+          if not @@ List.is_empty binders then
+            begin
+              List.iter binders ~f:(fun binder ->
+                patbind_dict := insert_unique (as_error_string binder) false !patbind_dict;
+              );
+              (* Log out all binders *)
+              (* let msg = String.concat ~sep:", " (List.map (to_list !patbind_dict) fst) in
+              warn1 ("Binders are: " ^ msg) warning_level_map_load_store (ER.get_loc ER.dummy_rep); *)
+              stmt_iter stmts patbind_dict; 
+              find_unused !patbind_dict "Unused pattern binders: ";
+            end
+        );
+      in
       
-      (* Finds all used procedures, fields, and contract param *)
+      (* Iterating through statements of components of the contract
+      - Logs used procedures, fields, and contract parameters
+      *)
       List.iter ~f:(fun c -> 
         let is_proc = 
           match c.comp_type with
@@ -498,6 +557,7 @@ struct
             | CallProc (p, _ ) -> mark_used proc_dict p;
             | MatchStmt (x, clauses) ->
               mark_used cfields_dict x;
+              dc_pattern clauses;
               if is_proc then mark_used pparams_dict x;
               (List.iter ~f:(fun (_, mbody) ->
                 stmt_iter mbody
@@ -507,12 +567,6 @@ struct
         in stmt_iter c.comp_body
       ) cmod.contr.ccomps;
 
-      let find_unused dict warn_msg =
-        let unused_list = List.map (List.filter (to_list dict) ~f:(fun (_, v) -> not v)) fst in
-        if not (List.is_empty unused_list) then 
-          let unused_s = String.concat ~sep:", " unused_list in
-          warn1 (warn_msg ^ unused_s) warning_level_map_load_store (ER.get_loc ER.dummy_rep);
-      in
 
       find_unused !proc_dict "Unused procedures: ";
       find_unused !cfields_dict "Unused fields: ";
