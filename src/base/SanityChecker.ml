@@ -397,16 +397,159 @@ struct
   - Include the location of the dead code
   *)
 
+  (* Dictionaries are of type 
+  @key: string 
+  @value: used:Bool, rep
+  *)
     (* Update a dictionary that a value is used *)
     let mark_used dict_ref name =
-      dict_ref := update_all (as_error_string name) true !dict_ref
+      let sname = as_error_string name in
+      let v = lookup (sname) !dict_ref in
+      match v with 
+      | Some (false, rep) -> dict_ref := update_all (as_error_string name) (true, rep) !dict_ref
+      | _ -> ()
+    
+    (* Clear dictionary *)
+    let clear_dict = remove_all 
+
+    (* Filter through dictionary to find unused identifiers *)
+    let find_unused dict warn_msg =
+      let unused_list = List.map (List.filter (to_list dict) ~f:(fun (_, (v, _)) -> not v))
+        ~f:(fun (name, (_, rep)) -> (name, rep)) 
+      in
+      if not (List.is_empty unused_list) then 
+      List.iter unused_list ~f:( fun (name, rep) ->
+        warn1 (warn_msg ^ name) warning_level_map_load_store (ER.get_loc rep);
+      )
+
+    (* Dead Code Detector of a Contract Module *)
+    let dc_cmod (cmod: cmodule) =
+
+      (* Global dictionaries: fields, contract parameters, procedures *)
+      let cfields_dict = ref (make_dict ()) in
+      let cparams_dict = ref (make_dict ()) in
+      let proc_dict = ref (make_dict ()) in
+
+      (******* Populate global dictionaries *******)
+      List.iter cmod.contr.cfields ~f:( fun (a,b,c) ->
+        cfields_dict := insert_unique (as_error_string a) (false, get_rep a) !cfields_dict
+      );
+
+      List.iter cmod.contr.cparams ~f:(
+        fun (cparam, _) -> 
+          cparams_dict := 
+            insert_unique (as_error_string cparam) (false, get_rep cparam) !cparams_dict
+      );
+
+      List.iter cmod.contr.ccomps ~f:(fun comp -> 
+        match comp.comp_type with 
+        | CompTrans -> ()
+        | CompProc -> 
+          (* Populate the procedure dictionary *)
+          proc_dict := insert_unique (as_error_string comp.comp_name) (false, ER.dummy_rep) !proc_dict;
+      );
+
+      (**************** Iterators ****************)
+      (* Iterate through expressions to look for use of 
+      - Contract parameters
+      - Contract parameters/Pattern binders/Local variables
+      *)
+      let rec expr_iter expr local_dicts = 
+
+        (* Marking a variable is used in contract parameter dictionary
+        and the local dictionaries *)
+        let mark_used' x = 
+          mark_used cparams_dict x;
+          List.iter local_dicts ~f:(fun dict -> mark_used dict x);
+        in
+
+        match fst expr with 
+        | Var x -> mark_used' x;
+        | Let (i, _, e1, e2) ->
+          let local_dict = ref (make_dict ()) in
+          local_dict := insert_unique (as_error_string i) (false, get_rep i) !local_dict;
+          expr_iter e1 local_dicts;
+          expr_iter e2 (local_dict :: local_dicts);
+          find_unused !local_dict "Unused local variable in expr: ";
+          (* TODO: TEST *)
+        | Message sl ->
+          List.iter sl ~f:( fun (_, payload) ->
+            match payload with
+            | MLit _ -> () 
+            | MVar x -> mark_used' x;
+          )
+        | App (f, actuals) ->
+          (* Function type are not storable, we don't check f, just the arguments *)
+          List.iter actuals ~f:(fun act -> mark_used' act)
+        | MatchExpr (x, pats) ->
+          mark_used' x;
+          (* TODO: match expr pattern binder *)
+        | Builtin (_, _, actuals) -> 
+          List.iter actuals ~f:(fun act -> mark_used' act)
+        | TFun (_, e) | Fixpoint (_, _, e) | GasExpr (_, e)
+        | Fun (_, _, e) -> expr_iter e local_dicts
+        | Literal _ | TApp _ -> ()
+        | Constr _ -> () (* TODO: check for access to bound constr *)
+      in
+
+      (* Iterate through stmts to look for use of 
+      - Mutable fields
+      - Pattern binders/Local variables
+      *)
+      let rec stmt_iter stmts local_dicts =
+        let mark_used' x = 
+          mark_used cfields_dict x;
+          List.iter local_dicts ~f:(fun dict -> mark_used dict x);
+        in
+        List.iter stmts ~f:(fun (s, _) -> 
+          match s with 
+          | Load (_, f) | RemoteLoad (_, _, f) 
+          | MapGet (_, f, _, _) | RemoteMapGet (_, _, f, _, _)
+          | MapUpdate (f, _, _)
+          | Store (f, _) -> mark_used' f 
+          | Bind (x, expr) -> expr_iter expr local_dicts (* TODO: check for use of x *)
+          | CallProc (p, _) -> mark_used proc_dict p
+          | MatchStmt (x, plist) ->
+            begin
+              mark_used' x;
+              List.iter plist ~f:(fun (pat, stmts') ->
+                let bounds = get_pattern_bounds pat in 
+                let local_dict = ref (make_dict ()) in
+                List.iter bounds ~f:( fun bound ->
+                  local_dict := insert_unique (as_error_string bound) (false, get_rep bound) !local_dict;
+                );
+                stmt_iter stmts' (local_dict :: local_dicts);
+                find_unused !local_dict "Unused local variable in stmt pattern: "
+              );
+            end
+          | _ -> () (* TODO: do the rest *)
+        )
+
+      in
+
+      List.iter cmod.contr.ccomps ~f:(fun c ->
+        (* Create local dictionaries: component params *)
+        let param_dict = ref (make_dict ()) in
+        List.iter c.comp_params ~f:(
+          fun (param, _) -> 
+            param_dict := insert_unique (as_error_string param) (false, get_rep param) !param_dict;
+        );
+        stmt_iter c.comp_body [param_dict];
+        find_unused !param_dict "Unused local component parameters: "
+      );
+
+      (* Check use of global identifiers *)
+      find_unused !proc_dict "Unused procedures: ";
+      find_unused !cfields_dict "Unused fields: ";
+      find_unused !cparams_dict "Unused contract params: ";
+    
 
       (* Dead identifiers ie. 
       - procedures 
       - mutable fields 
       - contract parameters 
       - procedure parameters *)
-    let dead_code_cmod (cmod : cmodule) =
+    (* let dead_code_cmod (cmod : cmodule) =
 
       let find_unused dict warn_msg =
         let unused_list = List.map (List.filter (to_list dict) ~f:(fun (_, v) -> not v)) fst in
@@ -498,7 +641,7 @@ struct
 
       (* Function for iterating through pattern binder in statements *)
       let rec dc_pattern clauses =
-        let rec extract_binders p_left acc =
+        let rec extract_binders p_left acc =  (* use get_pattern_bounds instead *)
           match p_left with 
           | [] -> acc 
           | h :: t -> 
@@ -577,7 +720,7 @@ struct
       find_unused !proc_dict "Unused procedures: ";
       find_unused !cfields_dict "Unused fields: ";
       find_unused !cparams_dict "Unused contract params: ";
-      find_unused !pparams_dict "Unused procedure params: ";
+      find_unused !pparams_dict "Unused procedure params: "; *)
 
   end
 
@@ -591,7 +734,7 @@ struct
     let%bind () = CheckShadowing.shadowing_libentries rlibs in
     let%bind () = forallM ~f:CheckShadowing.shadowing_libtree elibs in
     let%bind () = CheckShadowing.shadowing_cmod cmod in
-    DeadCodeDetect.dead_code_cmod cmod;
+    DeadCodeDetect.dc_cmod cmod;
     pure ()
 
   let lmod_sanity (lmod : lmodule) (rlibs : lib_entry list)
