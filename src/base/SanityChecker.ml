@@ -496,8 +496,8 @@ struct
           | _ -> ()
       in
 
-      (* Iterating through pattern binder in statements *)
-      let dc_pattern clauses =
+      (* Function for iterating through pattern binder in statements *)
+      let rec dc_pattern clauses =
         let rec extract_binders p_left acc =
           match p_left with 
           | [] -> acc 
@@ -515,7 +515,7 @@ struct
             (* maps are storable*)
             | MapGet (_, v, _, _) | RemoteMapGet (_, _, v, _, _) 
             | MapUpdate (v, _, _) | Store (v, _) -> mark_used dict v 
-            | MatchStmt (x, clauses) -> ()
+            | MatchStmt (x, clauses) -> () (* TODO: iterate through the clauses *)
             | _ -> ()
           )
         in 
@@ -535,36 +535,42 @@ struct
             end
         );
       in
-      
-      (* Iterating through statements of components of the contract
-      - Logs used procedures, fields, and contract parameters
+
+      let is_proc comp_type = 
+        match comp_type with
+        | CompTrans -> false 
+        | CompProc -> true
+      in
+
+      (* Iterates through all statements
+      @stmts: statements
+      @c: contract component
+      @var_dict: dictionary that variables are checked for access (fields/pattern binder)
       *)
+      let rec stmt_iter stmts c var_dict = 
+        List.iter ~f:(fun (s, _) -> 
+          match s with
+          | Load (_, f) | RemoteLoad (_, _, f) 
+          | MapGet (_, f, _, _) | RemoteMapGet (_, _, f, _, _)
+          | MapUpdate (f, _, _)
+          | Store (f, _) -> mark_used var_dict f;
+          | Bind (x, expr) -> expr_iter expr (is_proc c.comp_type)
+          | CallProc (p, _ ) -> mark_used proc_dict p;
+          | MatchStmt (x, clauses) ->
+            mark_used var_dict x;
+            dc_pattern clauses;
+            if (is_proc c.comp_type) then mark_used pparams_dict x;
+            (List.iter ~f:(fun (_, mbody) ->
+              stmt_iter mbody c var_dict
+            ) clauses)
+          | _ -> ()
+        ) stmts
+      in 
+      
+      (* Iterating through statements of components of the contract*)
       List.iter ~f:(fun c -> 
-        let is_proc = 
-          match c.comp_type with
-          | CompTrans -> false 
-          | CompProc -> true
-        in
-        let rec stmt_iter stmts = 
-          List.iter ~f:(fun (s, _) -> 
-            match s with
-            | Load (_, f) | RemoteLoad (_, _, f) 
-            | MapGet (_, f, _, _) | RemoteMapGet (_, _, f, _, _)
-            | MapUpdate (f, _, _)
-            | Store (f, _) -> (* TODO: storing/updating without using prev value is also dead code *)
-              mark_used cfields_dict f;
-            | Bind (x, expr) -> expr_iter expr is_proc
-            | CallProc (p, _ ) -> mark_used proc_dict p;
-            | MatchStmt (x, clauses) ->
-              mark_used cfields_dict x;
-              dc_pattern clauses;
-              if is_proc then mark_used pparams_dict x;
-              (List.iter ~f:(fun (_, mbody) ->
-                stmt_iter mbody
-              ) clauses)
-            | _ -> ()
-          ) stmts
-        in stmt_iter c.comp_body
+        (* Call stmt_iter on the body of components, contract c, and default fields dictionary *)
+        stmt_iter c.comp_body c cfields_dict
       ) cmod.contr.ccomps;
 
 
