@@ -34,6 +34,7 @@ let code_not_authorized = Uint32 2
 let code_invalid_params = Uint32 3
 let code_bookid_exist = Uint32 4
 let code_store_not_open = Uint32 5
+let dead_code_var = Uint32 6
 
 (*
  * Book is an ADT with two fields:
@@ -42,13 +43,16 @@ let code_store_not_open = Uint32 5
 type Book =
 | Book of String String
 
-
 (*
  * Member is an ADT with two fields:
  * Member = { name , membership_type }
  *)
 type Member =
 | Member of String Uint32
+
+(* To be caught *)
+type DeadType =
+| Dead of String String
 
 (***************************************************)
 (*             The contract definition             *)

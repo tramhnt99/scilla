@@ -395,20 +395,23 @@ struct
 
   - Check for useless library imports
 
-  - Check dead events?
+  - Change from storing as strings to storing as Identifiers
+  - go through syntax to see predefined useful functions
   *)
 
   (* Dictionaries are of type 
   @key: string 
-  @value: used:Bool, rep
+  @value: used: Bool, rep
   *)
-    (* Update a dictionary that a value is used *)
+    (* Update a dictionary that a value is used, return whether we updated a dict *)
     let mark_used dict_ref name =
       let sname = as_error_string name in
       let v = lookup (sname) !dict_ref in
       match v with 
-      | Some (false, rep) -> dict_ref := update_all (as_error_string name) (true, rep) !dict_ref
-      | _ -> ()
+      | Some (false, rep) -> 
+        dict_ref := update_all (as_error_string name) (true, rep) !dict_ref;
+        true
+      | _ -> false
     
     (* Clear dictionary *)
     let clear_dict dict_ref = 
@@ -419,7 +422,7 @@ struct
       dict_ref := insert_unique (as_error_string name) (false, get_rep name) !dict_ref
 
     (* Filter through dictionary to find unused identifiers *)
-    let find_unused dict warn_msg =
+    let find_unused_ER dict warn_msg =
       let unused_list = List.map (List.filter (to_list dict) ~f:(fun (_, (v, _)) -> not v))
         ~f:(fun (name, (_, rep)) -> (name, rep)) 
       in
@@ -428,9 +431,40 @@ struct
         warn1 (warn_msg ^ name) warning_level_dead_code (ER.get_loc rep);
       )
 
-    (* Dead Code Detector of a Contract Module *)
-    let dc_cmod (cmod: cmodule) =
+    let find_unused_SR dict warn_msg =
+      let unused_list = List.map (List.filter (to_list dict) ~f:(fun (_, (v, _)) -> not v))
+        ~f:(fun (name, (_, rep)) -> (name, rep)) 
+      in
+      if not (List.is_empty unused_list) then 
+      List.iter unused_list ~f:( fun (name, rep) ->
+        warn1 (warn_msg ^ name) warning_level_dead_code (SR.get_loc rep);
+      )
 
+    (* Dead Code Detector of a Contract Module *)
+    let dc_cmod (cmod: cmodule) (elibs: libtree list) =
+
+      (**************** ASSERTIONS ***************)
+
+      (* Checking elibs and cmod.elib are the same *)
+      let cmod_elib_list = List.map cmod.elibs fst in 
+      let elibs_list = List.map elibs ~f:(fun libt -> libt.libn.lname) in
+      if (List.length cmod_elib_list) <> (List.length elibs_list) then 
+        warn1 ("Bug in imported libraries - imported libraries might be incorrect") warning_level_dead_code (SR.get_loc SR.dummy_rep);
+      List.iter cmod_elib_list ~f:(fun elib -> 
+        let find = List.find elibs_list ~f:(fun e -> SCIdentifier.equal e elib) in
+        match find with 
+        | None ->  warn1 ((as_error_string elib) ^ " not found in elib") warning_level_dead_code (SR.get_loc SR.dummy_rep)
+        | Some _ -> ()
+      );
+      List.iter elibs_list ~f:(fun elib -> 
+        let find = List.find cmod_elib_list ~f:(fun e -> SCIdentifier.equal e elib) in
+        match find with 
+        | None ->  warn1 ((as_error_string elib) ^ " not found in cmod_elib_list") warning_level_dead_code (SR.get_loc SR.dummy_rep)
+        | Some _ -> ()
+      );
+    
+
+      (************** DC Detector ***************)
       (* Global dictionaries: fields, contract parameters, procedures *)
       (* Global refers to being global in the contract *)
       let cfields_dict = ref (make_dict ()) in
@@ -440,6 +474,9 @@ struct
       (* Library entries *)
       let libvar_dict = ref (make_dict ()) in
       let libty_dict = ref (make_dict ()) in
+
+      (* Library imports *)
+      let elibs_dict = ref (make_dict ()) in
 
       (******* Populate global dictionaries *******)
       List.iter cmod.contr.cfields ~f:( fun (a,b,c) ->
@@ -471,10 +508,59 @@ struct
           | LibTyp (name, _) -> add_dict libty_dict name
         );
 
+      (********* Populate library imports ***********)
+      List.iter cmod.elibs ~f:(fun (lib_name, _) ->
+        add_dict elibs_dict lib_name
+      );
+
+      (* "The scope of variables in an imported library is restricted to 
+         the immediate importer." *)
+      (* Check if var or type exists in library *)
+      let exists_in_lib x elib = 
+        let iter_lib_entry lentries x =
+          let found = ref false in
+          List.iter lentries ~f:(fun lentry ->
+            match lentry with 
+            | LibVar (iden, _, _) -> 
+              (* TODO: remove *)
+              (* warn1 ("libvar " ^ (as_error_string iden)) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
+              if SCIdentifier.equal iden x then
+                found := true;
+            | LibTyp (iden, _) -> 
+              (* safe to check with var cause rep would be unique *)
+              if SCIdentifier.equal iden x then 
+                found := true
+          );
+          !found
+        in
+        iter_lib_entry elib.libn.lentries x
+      in
+
+      let mark_used_elibs f =
+        (* find all elibs that have not been used *)
+        let unused_elibs = List.filter elibs ~f:(fun elib ->
+          (* warn1 ("Checking for unused_elib : " ^ (as_error_string elib.libn.lname)) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
+          match AssocDictionary.lookup (as_error_string elib.libn.lname) !elibs_dict with
+          | None -> false (* shouldn't happen *)
+          | Some (is_used, _) -> not is_used)
+        in
+        let res = ref false in
+        (* iterate through elibs, check if they have been used, find the f function in them, mark if found*)
+        List.iter unused_elibs ~f:(fun elib ->  
+          if exists_in_lib f elib then 
+            let _ = mark_used elibs_dict elib.libn.lname in
+            (* let msg = sprintf "Found def in lib: %s" (as_error_string elib.libn.lname) in   *)
+            (* warn1 (msg) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
+            res := true;
+        );
+        !res
+      in
+
       (* Marking use of ADTs *)
       let rec mark_used_ty ty =
           match ty with 
-          | SCType.ADT (iden, _) -> mark_used libty_dict iden
+          | SCType.ADT (iden, _) -> 
+            let _ = mark_used libty_dict iden in ()
           | SCType.MapType (ty1, ty2) | SCType.FunType (ty1, ty2) -> 
             mark_used_ty ty1;
             mark_used_ty ty2;
@@ -486,15 +572,17 @@ struct
       (* Iterate through expressions to look for use of 
       - Contract parameters
       - Contract parameters/Pattern binders/Local variables
+      - Defined libraries' functions/types
+      - Imported libraries
       *)
       let rec expr_iter expr local_dicts = 
 
-        (* Marking a variable is used in contract parameter dict and library entries
-        and the local dictionaries *)
         let mark_used' x = 
-          mark_used cparams_dict x;
-          mark_used libvar_dict x;
-          List.iter local_dicts ~f:(fun dict -> mark_used dict x);
+          if not @@ mark_used cparams_dict x then
+            if not @@ mark_used libvar_dict x then     
+              if not @@ mark_used_elibs x then          
+                List.iter local_dicts ~f:(fun dict -> 
+                  let _ = mark_used dict x in ());
         in
         
         match fst expr with 
@@ -504,7 +592,7 @@ struct
           local_dict := insert_unique (as_error_string i) (false, get_rep i) !local_dict;
           expr_iter e1 local_dicts;
           expr_iter e2 (local_dict :: local_dicts);
-          find_unused !local_dict "Unused local variable in expr: ";
+          find_unused_ER !local_dict "Unused local variable in expr: ";
           (* TODO: TEST *)
         | Message sl ->
           List.iter sl ~f:( fun (_, payload) ->
@@ -516,12 +604,13 @@ struct
           List.iter tys ~f:(fun ty -> mark_used_ty ty);
           List.iter es ~f:(fun e -> mark_used' e)
         | App (f, actuals) ->
+          mark_used' f;
           (* warn1 ("App " ^ (as_error_string f)) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
-          (* Function type are not storable, we don't check f, just the arguments *)
           List.iter actuals ~f:(fun act -> 
           (* warn1 (as_error_string act) warning_level_dead_code (ER.get_loc ER.dummy_rep); *)
           mark_used' act)
-        |  TApp (_, tys) -> 
+        | TApp (f, tys) -> 
+          mark_used' f;
           List.iter tys mark_used_ty
         | MatchExpr (x, plist) ->
           begin
@@ -533,7 +622,7 @@ struct
                 local_dict := insert_unique (as_error_string bound) (false, get_rep bound) !local_dict;
               );
               expr_iter exp' (local_dict :: local_dicts);
-              find_unused !local_dict "Unused Local Variable Expr: "
+              find_unused_ER !local_dict "Unused Local Variable Expr: "
             ) (* TODO: TEST *)
           end
         | Builtin (_, _, actuals) -> 
@@ -549,12 +638,19 @@ struct
       (* Iterate through stmts to look for use of 
       - Mutable fields
       - Pattern binders/Local variables
+      - Defined libraries' functions
+      - Imported libraries
       *)
       let rec stmt_iter stmts local_dicts =
         let mark_used' x = 
-          mark_used cfields_dict x;
-          mark_used libvar_dict x;
-          List.iter local_dicts ~f:(fun dict -> mark_used dict x);
+          if mark_used cfields_dict x then 
+            warn1 ("cfields marked " ^ as_error_string x) warning_level_dead_code (ER.get_loc ER.dummy_rep);
+          if not @@ mark_used cfields_dict x then
+            if not @@ mark_used libvar_dict x then
+              if not @@ mark_used_elibs x then
+                List.iter local_dicts ~f:(fun dict -> 
+                  let _ = mark_used dict x in ())
+          
         in
         List.iter stmts ~f:(fun (s, _) -> 
           match s with 
@@ -573,7 +669,7 @@ struct
             List.iter i1 mark_used'
           | Bind (x, expr) -> expr_iter expr local_dicts (* TODO: check for use of x *)
           | CallProc (p, actuals) -> 
-            mark_used proc_dict p;
+            let _ = mark_used proc_dict p in ();
             List.iter actuals mark_used';
           | MatchStmt (x, plist) ->
             begin
@@ -585,13 +681,15 @@ struct
                   local_dict := insert_unique (as_error_string bound) (false, get_rep bound) !local_dict;
                 );
                 stmt_iter stmts' (local_dict :: local_dicts);
-                find_unused !local_dict "Unused Local Variable Stmt: "
+                find_unused_ER !local_dict "Unused Local Variable Stmt: "
               );
             end
-          | Iterate (l, p) -> mark_used proc_dict p; mark_used' l
+          | Iterate (l, p) -> 
+            let _ = mark_used proc_dict p in ();
+            mark_used' l
           | SendMsgs m -> mark_used' m
           | ReadFromBC _ | AcceptPayment | CreateEvnt _ | Throw _ 
-          | GasStmt _ -> () (* TODO: do the rest *)
+          | GasStmt _ -> ()
         )
 
       in
@@ -605,7 +703,7 @@ struct
             param_dict := insert_unique (as_error_string param) (false, get_rep param) !param_dict;
         );
         stmt_iter c.comp_body [param_dict];
-        find_unused !param_dict "Unused local component parameters: "
+        find_unused_ER !param_dict "Unused local component parameters: "
       );
 
       (* Iterate through expressions of fields *)
@@ -618,11 +716,12 @@ struct
       expr_iter cmod.contr.cconstraint [];
 
       (* Check use of global identifiers *)
-      find_unused !proc_dict "Unused procedures: ";
-      find_unused !cfields_dict "Unused fields: ";
-      find_unused !cparams_dict "Unused contract params: ";
-      find_unused !libvar_dict "Unused library var: ";
-      find_unused !libty_dict "Unused user defined ADT: ";
+      find_unused_ER !proc_dict "Unused procedures: ";
+      find_unused_ER !cfields_dict "Unused fields: ";
+      find_unused_ER !cparams_dict "Unused contract params: ";
+      find_unused_ER !libvar_dict "Unused library var: ";
+      find_unused_ER !libty_dict "Unused user defined ADT: ";
+      find_unused_SR !elibs_dict "Unused imported libraries: ";
 
       (* Clear dictionaries for checking libraries *)
       clear_dict proc_dict;
@@ -639,7 +738,6 @@ struct
           | LibTyp _ -> ()
           | LibVar (_, _, e) -> expr_iter e [];
         );
-    
 
   end
 
@@ -653,7 +751,7 @@ struct
     let%bind () = CheckShadowing.shadowing_libentries rlibs in
     let%bind () = forallM ~f:CheckShadowing.shadowing_libtree elibs in
     let%bind () = CheckShadowing.shadowing_cmod cmod in
-    DeadCodeDetect.dc_cmod cmod;
+    DeadCodeDetect.dc_cmod cmod elibs;
     pure ()
 
   let lmod_sanity (lmod : lmodule) (rlibs : lib_entry list)
