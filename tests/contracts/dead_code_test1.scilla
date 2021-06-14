@@ -1,25 +1,12 @@
 scilla_version 0
 
-
-(*
- * BookstoreDead1 Contract with Dead Code
- * 
- * This contract demonstrates how a developer can build a CRUD-like smart contract easily.
- * Concepts covered:
- * - Procedures
- * - Custom ADTs
- * - Simple Access Controls
- * 
- * Access control logic is delibrately left out for brevity. You can reference AddMember
- * for how you can implement access control to prevent unauthorised access to transitions.
- *)
-
-(* Modified to use for testing the Dead Code Detector *)
+(* Modified `bookstore.scilla` to use for testing the Dead Code Detector *)
 
 
 (***************************************************)
 (*               Associated library                *)
 (***************************************************)
+import BoolUtils
 library BookstoreDead1
 
 let one_msg =
