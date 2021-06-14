@@ -64,11 +64,11 @@ struct
         warn1 (warn_msg ^ name) warning_level_dead_code (get_loc rep);
       )
 
-    (* Dead Code Detector of a Contract Module *)
+
+    (* Detect Dead code in Contract Modules *)
     let dc_cmod (cmod: cmodule) (elibs: libtree list) =
 
-      (**************** ASSERTIONS ***************)
-
+      (**************** Assertions ***************)
       (* Checking elibs and cmod.elib are the same *)
       let cmod_elib_list = List.map cmod.elibs fst in 
       let elibs_list = List.map elibs ~f:(fun libt -> libt.libn.lname) in
@@ -89,8 +89,7 @@ struct
     
 
       (************** DC Detector ***************)
-      (* Global dictionaries: fields, contract parameters, procedures *)
-      (* Global refers to being global in the contract *)
+      (* Global contract dictionaries: fields, contract parameters, procedures *)
       let cfields_dict = ref (make_dict ()) in
       let cparams_dict = ref (make_dict ()) in
       let proc_dict = ref (make_dict ()) in
@@ -108,7 +107,7 @@ struct
         add_dict elibs_dict lib_name
       );
 
-      (******* Populate library dictionaries *******)
+      (******* Populate library entries *******)
       let pop_lib_dict () =
         match cmod.libs with 
         | None -> ()
@@ -126,8 +125,6 @@ struct
       (******* Populate contract dictionaries *******)
       List.iter cmod.contr.cfields ~f:( fun (iden, ty, expr) ->
         add_dict cfields_dict iden;
-        (* Mark the use of ADT *)
-        let _ = mark_used_ty ty in ()
       );
 
       List.iter cmod.contr.cparams ~f:(
@@ -166,6 +163,7 @@ struct
         iter_lib_entry elib.libn.lentries x
       in
 
+      (* Given a lib_entry, mark its library parent as used *)
       let mark_used_elibs f =
         (* find all elibs that have not been used *)
         let unused_elibs = List.filter elibs ~f:(fun elib ->
@@ -251,8 +249,7 @@ struct
           List.iter es ~f:(fun e -> mark_used' e)
         | App (f, actuals) ->
           mark_used' f;
-          List.iter actuals ~f:(fun act -> 
-          mark_used' act)
+          List.iter actuals ~f:(fun act -> mark_used' act)
         | TApp (f, tys) -> 
           mark_used' f;
           List.iter tys mark_used_ty;
@@ -271,8 +268,7 @@ struct
           end
         | Builtin (builtin, tys, actuals) -> 
           List.iter tys mark_used_ty;
-          List.iter actuals ~f:(fun act -> 
-          mark_used' act);
+          List.iter actuals ~f:(fun act -> mark_used' act);
         | Fixpoint (_, ty, e) 
         | Fun (_, ty, e) -> expr_iter e local_dicts; mark_used_ty ty;
         | TFun (_, e) | GasExpr (_, e) -> expr_iter e local_dicts
@@ -370,7 +366,7 @@ struct
       clear_dict cfields_dict;
       clear_dict cparams_dict;
 
-      (* Check exp from libraries *)
+      (* Check exp from module's library *)
       match cmod.libs with 
       | None -> ()
       | Some lib ->
