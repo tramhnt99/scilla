@@ -192,7 +192,6 @@ struct
             mark_used_ty ty1;
             mark_used_ty ty2;
           | _ -> ()
-          (* TODO: TEST *)
       in   
 
 
@@ -236,7 +235,6 @@ struct
             expr_iter e1 local_dicts;
             expr_iter e2 (local_dict :: local_dicts);
             find_unused !local_dict "Unused local variable: " ER.get_loc;
-            (* TODO: TEST *)
           end
         | Message sl ->
           List.iter sl ~f:( fun (_, payload) ->
@@ -264,7 +262,7 @@ struct
               );
               expr_iter exp' (local_dict :: local_dicts);
               find_unused !local_dict "Unused Variable: " ER.get_loc
-            ) (* TODO: TEST *)
+            )
           end
         | Builtin (builtin, tys, actuals) -> 
           List.iter tys mark_used_ty;
@@ -305,7 +303,7 @@ struct
           | MapGet (_, f, i1, _) | RemoteMapGet (_, _, f, i1, _) ->
             mark_used' f;
             List.iter i1 mark_used'
-          | Bind (x, expr) -> expr_iter expr local_dicts (* TODO: check for use of x *)
+          | Bind (_, expr) -> expr_iter expr local_dicts 
           | CallProc (p, actuals) -> 
             let _ = mark_used proc_dict p in ();
             List.iter actuals mark_used';
